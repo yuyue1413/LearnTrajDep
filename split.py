@@ -46,5 +46,5 @@ def split_train_test(dir):
             shutil.copy(source_file, destination_file)
 
 if __name__ == "__main__":
-    split_train_test('F:\Coding\AlexNet\data')
+    split_train_test('E:\\Coding\\GitHub\\AlexNet\\data\\test')
 #按照80%train,20%test划分数据集
