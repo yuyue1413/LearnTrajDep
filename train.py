@@ -19,7 +19,7 @@ BOOT_TRAIN = r'E:\Coding\GitHub\AlexNet\data\train'
 BOOT_VAL = r'E:\Coding\GitHub\AlexNet\data\val'
 
 # 1、定义一个数据预处理的转换
-# 将图像的像素值归一化到[-1, 1]之间
+# 特征缩放：使用归一化进行特征缩放，将图像的像素值归一化到[-1, 1]之间
 normalize = transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
 
 # 定义train_transforms这个变量，相当于定义了一个管道，对每张图片进行下面这些转换
