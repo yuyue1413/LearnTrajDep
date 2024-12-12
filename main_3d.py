@@ -78,7 +78,7 @@ def main(opt):
     val_dataset = H36motion3D(path_to_data=opt.data_dir, actions='all', input_n=input_n, output_n=output_n,
                               split=2, dct_used=dct_n, sample_rate=sample_rate)
 
-    # load dadasets for training
+    # 加载 dataset 进行训练
     train_loader = DataLoader(
         dataset=train_dataset,
         batch_size=opt.train_batch,
@@ -105,7 +105,7 @@ def main(opt):
         print('>>> epoch: {} | lr: {:.5f}'.format(epoch + 1, lr_now))
         ret_log = np.array([epoch + 1])
         head = np.array(['epoch'])
-        # per epoch
+        # 每个 epoch
         lr_now, t_l = train(train_loader, model, optimizer, lr_now=lr_now, max_norm=opt.max_norm, is_cuda=is_cuda,
                             dim_used=train_dataset.dim_used, dct_n=dct_n)
         ret_log = np.append(ret_log, [lr_now, t_l])
@@ -130,7 +130,7 @@ def main(opt):
         ret_log = np.append(ret_log, test_3d_temp)
         head = np.append(head, test_3d_head)
 
-        # update log file and save checkpoint
+        # 更新日志文件并保存检查点
         df = pd.DataFrame(np.expand_dims(ret_log, axis=0))
         if epoch == start_epoch:
             df.to_csv(opt.ckpt + '/' + script_name + '.csv', header=head, index=False)
@@ -167,12 +167,12 @@ def train(train_loader, model, optimizer, lr_now=None, max_norm=True, is_cuda=Fa
 
         bt = time.time()
         if is_cuda:
-            inputs = Variable(inputs.cuda()).float()
-            all_seq = Variable(all_seq.cuda(async=True)).float()
+            inputs = inputs.cuda().float()
+            all_seq = all_seq.cuda(non_blocking=True).float()
 
         outputs = model(inputs)
 
-        # calculate loss and backward
+        # 计算损失和反向传播
         loss = loss_funcs.mpjpe_error_p3d(outputs, all_seq, dct_n, dim_used)
         optimizer.zero_grad()
         loss.backward()
@@ -180,15 +180,16 @@ def train(train_loader, model, optimizer, lr_now=None, max_norm=True, is_cuda=Fa
             nn.utils.clip_grad_norm(model.parameters(), max_norm=1)
         optimizer.step()
 
-        # update the training loss
-        t_l.update(loss.cpu().data.numpy()[0] * batch_size, batch_size)
+        # 更新训练损失
+        # t_l.update(loss.cpu().data.numpy()[0] * batch_size, batch_size)
+        loss_value = loss.item()  # 获取标量值
+        t_l.update(loss_value * batch_size, batch_size)
 
         bar.suffix = '{}/{}|batch time {:.4f}s|total time{:.2f}s'.format(i+1, len(train_loader), time.time() - bt,
                                                                          time.time() - st)
         bar.next()
     bar.finish()
     return lr_now, t_l.avg
-
 
 def test(train_loader, model, input_n=20, output_n=50, is_cuda=False, dim_used=[], dct_n=15):
     N = 0
@@ -206,8 +207,8 @@ def test(train_loader, model, input_n=20, output_n=50, is_cuda=False, dim_used=[
         bt = time.time()
 
         if is_cuda:
-            inputs = Variable(inputs.cuda()).float()
-            all_seq = Variable(all_seq.cuda(async=True)).float()
+            inputs = inputs.cuda().float()
+            all_seq = all_seq.cuda(non_blocking=True).float()
 
         outputs = model(inputs)
 
@@ -238,7 +239,7 @@ def test(train_loader, model, input_n=20, output_n=50, is_cuda=False, dim_used=[
             j = eval_frame[k]
             t_3d[k] += torch.mean(torch.norm(
                 targ_p3d[:, j, :, :].contiguous().view(-1, 3) - pred_p3d[:, j, :, :].contiguous().view(-1, 3), 2,
-                1)).cpu().data.numpy()[0] * n
+                1)).item() * n
 
         N += n
 
@@ -259,8 +260,8 @@ def val(train_loader, model, is_cuda=False, dim_used=[], dct_n=15):
         bt = time.time()
 
         if is_cuda:
-            inputs = Variable(inputs.cuda()).float()
-            all_seq = Variable(all_seq.cuda(async=True)).float()
+            inputs = inputs.cuda().float()
+            all_seq = all_seq.cuda(non_blocking=True).float()
 
         outputs = model(inputs)
 
@@ -269,7 +270,9 @@ def val(train_loader, model, is_cuda=False, dim_used=[], dct_n=15):
         m_err = loss_funcs.mpjpe_error_p3d(outputs, all_seq, dct_n, dim_used)
 
         # update the training loss
-        t_3d.update(m_err.cpu().data.numpy()[0] * n, n)
+        # t_3d.update(m_err.cpu().data.numpy()[0] * n, n)
+        m_err_value = m_err.item()  # 获取标量值
+        t_3d.update(m_err_value * n, n)
 
         bar.suffix = '{}/{}|batch time {:.4f}s|total time{:.2f}s'.format(i+1, len(train_loader), time.time() - bt,
                                                                          time.time() - st)

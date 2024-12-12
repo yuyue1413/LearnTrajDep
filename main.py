@@ -27,18 +27,18 @@ def main(opt):
     lr_now = opt.lr
     is_cuda = torch.cuda.is_available()
 
-    # define log csv file
+    # 定义日志 CSV 文件
     script_name = os.path.basename(__file__).split('.')[0]
     script_name = script_name + "_in{:d}_out{:d}_dctn{:d}".format(opt.input_n, opt.output_n, opt.dct_n)
 
-    # create model
+    # 创建模型
     print(">>> creating model")
     input_n = opt.input_n
     output_n = opt.output_n
     dct_n = opt.dct_n
     sample_rate = opt.sample_rate
 
-    # 48 nodes for angle prediction
+    # 48 个角度预测节点
     model = nnmodel.GCN(input_feature=dct_n, hidden_feature=opt.linear_size, p_dropout=opt.dropout,
                         num_stage=opt.num_stage, node_n=48)
 
@@ -48,7 +48,7 @@ def main(opt):
     print(">>> total params: {:.2f}M".format(sum(p.numel() for p in model.parameters()) / 1000000.0))
     optimizer = torch.optim.Adam(model.parameters(), lr=opt.lr)
 
-    # continue from checkpoint
+    # Continue from checkpoint （从检查点继续）
     if opt.is_load:
         model_path_len = 'checkpoint/test/ckpt_main_gcn_muti_att_best.pth.tar'
         print(">>> loading ckpt len from '{}'".format(model_path_len))
@@ -63,7 +63,7 @@ def main(opt):
         optimizer.load_state_dict(ckpt['optimizer'])
         print(">>> ckpt len loaded (epoch: {} | err: {})".format(start_epoch, err_best))
 
-    # data loading
+    # 数据加载
     print(">>> loading data")
     train_dataset = H36motion(path_to_data=opt.data_dir, actions='all', input_n=input_n, output_n=output_n,
                               split=0, sample_rate=sample_rate, dct_n=dct_n)
@@ -73,7 +73,7 @@ def main(opt):
     val_dataset = H36motion(path_to_data=opt.data_dir, actions='all', input_n=input_n, output_n=output_n,
                             split=2, sample_rate=sample_rate, data_mean=data_mean, data_std=data_std, dct_n=dct_n)
 
-    # load dadasets for training
+    # 加载 dataset 进行训练
     train_loader = DataLoader(
         dataset=train_dataset,
         batch_size=opt.train_batch,
@@ -87,7 +87,8 @@ def main(opt):
         num_workers=opt.job,
         pin_memory=True)
 
-    acts = data_utils.define_actions('all')
+    # 加载测试数据集 H36motion，并使用 DataLoader 对各动作（acts）分别创建数据加载器，存入字典 test_data 中
+    acts = data_utils.define_actions('all') # 动作列表
     test_data = dict()
     for act in acts:
         test_dataset = H36motion(path_to_data=opt.data_dir, actions=act, input_n=input_n, output_n=output_n, split=1,
@@ -110,7 +111,7 @@ def main(opt):
         print('>>> epoch: {} | lr: {:.5f}'.format(epoch + 1, lr_now))
         ret_log = np.array([epoch + 1])
         head = np.array(['epoch'])
-        # per epoch
+        # 每个 epoch
         lr_now, t_l, t_e, t_3d = train(train_loader, model, optimizer, input_n=input_n,
                                        lr_now=lr_now, max_norm=opt.max_norm, is_cuda=is_cuda,
                                        dim_used=train_dataset.dim_used, dct_n=dct_n)
@@ -140,7 +141,7 @@ def main(opt):
         ret_log = np.append(ret_log, test_3d_temp)
         head = np.append(head, test_3d_head)
 
-        # update log file and save checkpoint
+        # 更新日志文件并保存检查点
         df = pd.DataFrame(np.expand_dims(ret_log, axis=0))
         if epoch == start_epoch:
             df.to_csv(opt.ckpt + '/' + script_name + '.csv', header=head, index=False)
@@ -163,7 +164,7 @@ def main(opt):
                         file_name=file_name)
 
 
-def train(train_loader, model, optimizer, input_n=20, dct_n=20, lr_now=None, max_norm=True, is_cuda=False, dim_used=[]):
+def train(train_loader, model, optimizer, input_n=20, dct_n=20, lr_now=None, max_norm=True, is_cuda=True, dim_used=[]):
     t_l = utils.AccumLoss()
     t_e = utils.AccumLoss()
     t_3d = utils.AccumLoss()
@@ -173,42 +174,50 @@ def train(train_loader, model, optimizer, input_n=20, dct_n=20, lr_now=None, max
     bar = Bar('>>>', fill='>', max=len(train_loader))
     for i, (inputs, targets, all_seq) in enumerate(train_loader):
 
-        # skip the last batch if only have one sample for batch_norm layers
+        # 如果 batch_norm 图层只有一个样本，则跳过最后一个批次
         batch_size = inputs.shape[0]
         if batch_size == 1:
             continue
 
         bt = time.time()
         if is_cuda:
-            inputs = Variable(inputs.cuda()).float()
+            inputs = inputs.cuda().float()
             # targets = Variable(targets.cuda(async=True)).float()
-            all_seq = Variable(all_seq.cuda(async=True)).float()
+            all_seq = all_seq.cuda(non_blocking=True).float()
 
+        # 前向传播，将预测值维度展平为（batch_size, -1）
         outputs = model(inputs)
         n = outputs.shape[0]
         outputs = outputs.view(n, -1)
         # targets = targets.view(n, -1)
 
-        loss = loss_funcs.sen_loss(outputs, all_seq, dim_used, dct_n)
 
-        # calculate loss and backward
+        # 计算损失和反向传播
+        loss = loss_funcs.sen_loss(outputs, all_seq, dim_used, dct_n)
         optimizer.zero_grad()
         loss.backward()
         if max_norm:
-            nn.utils.clip_grad_norm(model.parameters(), max_norm=1)
+            nn.utils.clip_grad_norm_(model.parameters(), max_norm=1)
         optimizer.step()
         n, _, _ = all_seq.data.shape
 
-        # 3d error
-        m_err = loss_funcs.mpjpe_error(outputs, all_seq, input_n, dim_used, dct_n)
 
-        # angle space error
-        e_err = loss_funcs.euler_error(outputs, all_seq, input_n, dim_used, dct_n)
+        # mpjpe_error 和 euler_error 在内部保存了梯度计算的相关变量（如未调用 .detach() 或 .item()）导致显存占用增长
+        # 所以outputs传进去的时候要调用detach()
+        # 3D 误差
+        m_err = loss_funcs.mpjpe_error(outputs.detach(), all_seq.detach(), input_n, dim_used, dct_n)
+        # 角度空间误差
+        e_err = loss_funcs.euler_error(outputs.detach(), all_seq.detach(), input_n, dim_used, dct_n).item()
 
-        # update the training loss
-        t_l.update(loss.cpu().data.numpy()[0] * n, n)
-        t_e.update(e_err.cpu().data.numpy()[0] * n, n)
-        t_3d.update(m_err.cpu().data.numpy()[0] * n, n)
+        # 更新训练损失
+        # loss.item()获取标量值
+        t_l.update(loss.item() * n, n)
+        t_e.update(e_err * n, n)
+        t_3d.update(m_err * n, n)
+
+        # 显存释放
+        del outputs
+        # torch.cuda.empty_cache()
 
         bar.suffix = '{}/{}|batch time {:.4f}s|total time{:.2f}s'.format(i + 1, len(train_loader), time.time() - bt,
                                                                          time.time() - st)
@@ -225,74 +234,84 @@ def test(train_loader, model, input_n=20, output_n=50, dct_n=20, is_cuda=False, 
     elif output_n == 10:
         eval_frame = [1, 3, 7, 9]
 
-    t_e = np.zeros(len(eval_frame))
-    t_3d = np.zeros(len(eval_frame))
+    t_euler_error = np.zeros(len(eval_frame))
+    t_3d_error = np.zeros(len(eval_frame))
 
     model.eval()
     st = time.time()
     bar = Bar('>>>', fill='>', max=len(train_loader))
-    for i, (inputs, targets, all_seq) in enumerate(train_loader):
-        bt = time.time()
+    with torch.no_grad():
+        for i, (inputs, targets, all_seq) in enumerate(train_loader):
+            bt = time.time()
 
-        if is_cuda:
-            inputs = Variable(inputs.cuda()).float()
-            # targets = Variable(targets.cuda(async=True)).float()
-            all_seq = Variable(all_seq.cuda(async=True)).float()
+            if is_cuda:
+                inputs = inputs.cuda().float()
+                # targets = Variable(targets.cuda(async=True)).float()
+                all_seq = all_seq.cuda(non_blocking=True).float()
 
-        outputs = model(inputs)
-        n = outputs.shape[0]
-        # outputs = outputs.view(n, -1)
-        # targets = targets.view(n, -1)
+            outputs = model(inputs)
+            n = outputs.shape[0]
+            # outputs = outputs.view(n, -1)
+            # targets = targets.view(n, -1)
 
-        # loss = loss_funcs.sen_loss(outputs, all_seq, dim_used)
+            # loss = loss_funcs.sen_loss(outputs, all_seq, dim_used)
 
-        n, seq_len, dim_full_len = all_seq.data.shape
-        dim_used_len = len(dim_used)
+            n, seq_len, dim_full_len = all_seq.data.shape
+            dim_used_len = len(dim_used)
 
-        # inverse dct transformation
-        _, idct_m = data_utils.get_dct_matrix(seq_len)
-        idct_m = Variable(torch.from_numpy(idct_m)).float().cuda()
-        outputs_t = outputs.view(-1, dct_n).transpose(0, 1)
-        outputs_exp = torch.matmul(idct_m[:, :dct_n], outputs_t).transpose(0, 1).contiguous().view(-1, dim_used_len,
-                                                                                                   seq_len).transpose(1,
-                                                                                                                      2)
 
-        pred_expmap = all_seq.clone()
-        dim_used = np.array(dim_used)
-        pred_expmap[:, :, dim_used] = outputs_exp
-        pred_expmap = pred_expmap[:, input_n:, :].contiguous().view(-1, dim_full_len)
-        targ_expmap = all_seq[:, input_n:, :].clone().contiguous().view(-1, dim_full_len)
+            # inverse dct transformation
+            _, idct_m = data_utils.get_dct_matrix(seq_len)
+            idct_m = torch.from_numpy(idct_m).float().cuda()
+            outputs_t = outputs.view(-1, dct_n).transpose(0, 1)
+            outputs_exp = torch.matmul(idct_m[:, :dct_n], outputs_t.detach()).transpose(0, 1).contiguous().view(-1, dim_used_len,
+                                                                                                       seq_len).transpose(1,2)
 
-        pred_expmap[:, 0:6] = 0
-        targ_expmap[:, 0:6] = 0
-        pred_expmap = pred_expmap.view(-1, 3)
-        targ_expmap = targ_expmap.view(-1, 3)
+            pred_expmap = all_seq.clone()
+            dim_used = np.array(dim_used)
+            pred_expmap[:, :, dim_used] = outputs_exp
+            pred_expmap = pred_expmap[:, input_n:, :].contiguous().view(-1, dim_full_len)
+            targ_expmap = all_seq[:, input_n:, :].clone().contiguous().view(-1, dim_full_len)
 
-        # get euler angles from expmap
-        pred_eul = data_utils.rotmat2euler_torch(data_utils.expmap2rotmat_torch(pred_expmap))
-        pred_eul = pred_eul.view(-1, dim_full_len).view(-1, output_n, dim_full_len)
-        targ_eul = data_utils.rotmat2euler_torch(data_utils.expmap2rotmat_torch(targ_expmap))
-        targ_eul = targ_eul.view(-1, dim_full_len).view(-1, output_n, dim_full_len)
+            pred_expmap[:, 0:6] = 0
+            targ_expmap[:, 0:6] = 0
+            pred_expmap = pred_expmap.view(-1, 3)
+            targ_expmap = targ_expmap.view(-1, 3)
 
-        # get 3d coordinates
-        targ_p3d = data_utils.expmap2xyz_torch(targ_expmap.view(-1, dim_full_len)).view(n, output_n, -1, 3)
-        pred_p3d = data_utils.expmap2xyz_torch(pred_expmap.view(-1, dim_full_len)).view(n, output_n, -1, 3)
+            # get euler angles from expmap
+            pred_eul = data_utils.rotmat2euler_torch(data_utils.expmap2rotmat_torch(pred_expmap))
+            pred_eul = pred_eul.view(-1, dim_full_len).view(-1, output_n, dim_full_len)
+            targ_eul = data_utils.rotmat2euler_torch(data_utils.expmap2rotmat_torch(targ_expmap))
+            targ_eul = targ_eul.view(-1, dim_full_len).view(-1, output_n, dim_full_len)
 
-        # update loss and testing errors
-        for k in np.arange(0, len(eval_frame)):
-            j = eval_frame[k]
-            t_e[k] += torch.mean(torch.norm(pred_eul[:, j, :] - targ_eul[:, j, :], 2, 1)).cpu().data.numpy()[0] * n
-            t_3d[k] += torch.mean(torch.norm(
-                targ_p3d[:, j, :, :].contiguous().view(-1, 3) - pred_p3d[:, j, :, :].contiguous().view(-1, 3), 2,
-                1)).cpu().data.numpy()[0] * n
-        # t_l += loss.cpu().data.numpy()[0] * n
-        N += n
+            # get 3d coordinates
+            targ_p3d = data_utils.expmap2xyz_torch(targ_expmap.view(-1, dim_full_len)).view(n, output_n, -1, 3)
+            pred_p3d = data_utils.expmap2xyz_torch(pred_expmap.view(-1, dim_full_len)).view(n, output_n, -1, 3)
 
-        bar.suffix = '{}/{}|batch time {:.4f}s|total time{:.2f}s'.format(i + 1, len(train_loader), time.time() - bt,
-                                                                         time.time() - st)
-        bar.next()
+            # update loss and testing errors
+            for k in np.arange(0, len(eval_frame)):
+                j = eval_frame[k]
+                # t_e[k] += torch.mean(torch.norm(pred_eul[:, j, :] - targ_eul[:, j, :], 2, 1)).item() * n
+                # t_3d[k] += torch.mean(torch.norm(
+                #     targ_p3d[:, j, :, :].contiguous().view(-1, 3) - pred_p3d[:, j, :, :].contiguous().view(-1, 3), 2,
+                #     1)).item() * n
+                # 直接使用 PyTorch 张量
+                t_euler_error[k] += (torch.norm(pred_eul[:, j, :] - targ_eul[:, j, :], dim=1).mean() * n).item()
+                t_3d_error[k] += (torch.norm(
+                    targ_p3d[:, j, :, :].contiguous().view(-1, 3) - pred_p3d[:, j, :, :].contiguous().view(-1, 3),
+                    dim=1).mean() * n).item()
+            # t_l += loss.cpu().data.numpy()[0] * n
+            N += n
+
+            # 显存释放
+            del outputs, outputs_exp, pred_expmap, targ_expmap, pred_eul, targ_eul, targ_p3d, pred_p3d
+            # torch.cuda.empty_cache()
+
+            bar.suffix = '{}/{}|batch time {:.4f}s|total time{:.2f}s'.format(i + 1, len(train_loader), time.time() - bt,
+                                                                             time.time() - st)
+            bar.next()
     bar.finish()
-    return t_e / N, t_3d / N
+    return t_euler_error / N, t_3d_error / N
 
 
 def val(train_loader, model, input_n=20, dct_n=20, is_cuda=False, dim_used=[]):
@@ -303,32 +322,37 @@ def val(train_loader, model, input_n=20, dct_n=20, is_cuda=False, dim_used=[]):
     model.eval()
     st = time.time()
     bar = Bar('>>>', fill='>', max=len(train_loader))
-    for i, (inputs, targets, all_seq) in enumerate(train_loader):
-        bt = time.time()
 
-        if is_cuda:
-            inputs = Variable(inputs.cuda()).float()
-            # targets = Variable(targets.cuda(async=True)).float()
-            all_seq = Variable(all_seq.cuda(async=True)).float()
+    with torch.no_grad():
+        for i, (inputs, targets, all_seq) in enumerate(train_loader):
+            bt = time.time()
 
-        outputs = model(inputs)
-        n = outputs.shape[0]
-        outputs = outputs.view(n, -1)
-        # targets = targets.view(n, -1)
+            if is_cuda:
+                inputs = inputs.cuda().float()
+                all_seq = all_seq.cuda(non_blocking=True).float()
 
-        # loss = loss_funcs.sen_loss(outputs, all_seq, dim_used)
+            outputs = model(inputs)
+            n = outputs.shape[0]
+            outputs = outputs.view(n, -1)
+            # targets = targets.view(n, -1)
 
-        n, _, _ = all_seq.data.shape
-        m_err = loss_funcs.mpjpe_error(outputs, all_seq, input_n, dim_used, dct_n)
-        e_err = loss_funcs.euler_error(outputs, all_seq, input_n, dim_used, dct_n)
+            # loss = loss_funcs.sen_loss(outputs, all_seq, dim_used)
 
-        # t_l.update(loss.cpu().data.numpy()[0] * n, n)
-        t_e.update(e_err.cpu().data.numpy()[0] * n, n)
-        t_3d.update(m_err.cpu().data.numpy()[0] * n, n)
+            n, _, _ = all_seq.data.shape
+            m_err = loss_funcs.mpjpe_error(outputs.detach(), all_seq.detach(), input_n, dim_used, dct_n).item()
+            e_err = loss_funcs.euler_error(outputs.detach(), all_seq.detach(), input_n, dim_used, dct_n).item()
 
-        bar.suffix = '{}/{}|batch time {:.4f}s|total time{:.2f}s'.format(i + 1, len(train_loader), time.time() - bt,
-                                                                         time.time() - st)
-        bar.next()
+            # t_l.update(loss.cpu().data.numpy()[0] * n, n)
+            t_e.update(e_err * n, n)
+            t_3d.update(m_err * n, n)
+
+            # 显存释放
+            del outputs
+            # torch.cuda.empty_cache()
+
+            bar.suffix = '{}/{}|batch time {:.4f}s|total time{:.2f}s'.format(i + 1, len(train_loader), time.time() - bt,
+                                                                             time.time() - st)
+            bar.next()
     bar.finish()
     return t_e.avg, t_3d.avg
 
