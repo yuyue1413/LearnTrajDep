@@ -104,3 +104,7 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+
+checkpoint/test
+
+data/h36m
